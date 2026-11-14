@@ -127,16 +127,33 @@ export async function generateDailyCampaign(
     // Step 6: Save posts to database
     const savedPosts: Post[] = []
 
+    // Valid values per DB check constraints
+    const VALID_FORMATS = new Set(['reel','carousel','story','static_image','short_video','article','post','thread','comment','reply'])
+    const VALID_MEDIA_TYPES = new Set(['image','video','carousel','text'])
+
+    // Per-platform format fallbacks
+    const DEFAULT_FORMAT: Record<string, string> = {
+      instagram: 'static_image', tiktok: 'short_video', linkedin: 'post',
+      reddit: 'post', twitter: 'post',
+    }
+    const DEFAULT_MEDIA_TYPE: Record<string, string> = {
+      instagram: 'image', tiktok: 'video', linkedin: 'text',
+      reddit: 'text', twitter: 'text',
+    }
+
     for (const post of writtenPosts) {
       const brief = campaignPlan.posts.find(b => b.platform === post.platform)
       if (!brief) continue
+
+      const safeFormat = VALID_FORMATS.has(post.format) ? post.format : (DEFAULT_FORMAT[post.platform] || 'post')
+      const safeMediaType = VALID_MEDIA_TYPES.has(post.media_type) ? post.media_type : (DEFAULT_MEDIA_TYPE[post.platform] || 'text')
 
       const scheduledAt = buildScheduledAt(date, post.scheduled_time || brief.scheduled_time)
       const destinationUrl = buildUTMUrl(
         post.destination_url || 'https://forgcv.com',
         post.platform as Platform,
         campaignPlan.theme.toLowerCase().replace(/\s+/g, '-'),
-        `${post.platform}-${post.format}`
+        `${post.platform}-${safeFormat}`
       )
 
       const { data: savedPost, error: postError } = await supabase
@@ -144,7 +161,7 @@ export async function generateDailyCampaign(
         .insert({
           campaign_id: campaign.id,
           platform: post.platform,
-          format: post.format,
+          format: safeFormat,
           status: 'awaiting_approval',
           scheduled_at: scheduledAt,
           title: post.title,
@@ -155,8 +172,8 @@ export async function generateDailyCampaign(
           utm_source: post.platform,
           utm_medium: 'social',
           utm_campaign: campaignPlan.theme.toLowerCase().replace(/\s+/g, '-'),
-          utm_content: `${post.platform}-${post.format}`,
-          media_type: post.media_type,
+          utm_content: `${post.platform}-${safeFormat}`,
+          media_type: safeMediaType,
           media_urls: post.media_urls || [],
           media_preview_url: post.media_preview_url,
           objective: post.objective,
@@ -169,7 +186,11 @@ export async function generateDailyCampaign(
         .select()
         .single()
 
-      if (!postError && savedPost) {
+      if (postError) {
+        const msg = `save ${post.platform}: ${postError.message}`
+        console.error(`[Orchestrator] Post save failed — ${msg}`)
+        agentErrors.push(msg)
+      } else if (savedPost) {
         savedPosts.push(savedPost as Post)
       }
     }
