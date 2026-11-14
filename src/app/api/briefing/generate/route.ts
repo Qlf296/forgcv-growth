@@ -83,6 +83,7 @@ export async function POST(request: Request) {
       campaign_id: result.campaign_id,
       posts_created: result.posts_created,
       date: campaignDate,
+      ...(result.agent_errors?.length ? { agent_errors: result.agent_errors } : {}),
     })
 
   } catch (err) {

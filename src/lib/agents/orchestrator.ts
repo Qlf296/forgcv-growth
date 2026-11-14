@@ -45,6 +45,7 @@ export interface OrchestratorResult {
   strategy_summary: string
   objective: string
   theme: string
+  agent_errors?: string[]
 }
 
 export async function generateDailyCampaign(
@@ -101,6 +102,7 @@ export async function generateDailyCampaign(
 
     // Step 4: Specialist agents (run sequentially to respect rate limits)
     const writtenPosts: WrittenPost[] = []
+    const agentErrors: string[] = []
 
     for (const brief of campaignPlan.posts) {
       try {
@@ -109,20 +111,16 @@ export async function generateDailyCampaign(
 
         // Step 5: Quality control
         const qcResult = await runQualityControl(post)
-
         if (!qcResult.approved) {
-          console.warn(`[Orchestrator] QC rejected ${brief.platform} post: ${qcResult.issues.join(', ')}`)
+          console.warn(`[Orchestrator] QC notes for ${brief.platform}: ${qcResult.issues.join(', ')}`)
         }
-
-        // Apply QC corrections if any
-        if (qcResult.final_caption) {
-          post.caption = qcResult.final_caption
-        }
+        if (qcResult.final_caption) post.caption = qcResult.final_caption
 
         writtenPosts.push(post)
       } catch (err) {
-        console.error(`[Orchestrator] ${brief.platform} agent failed:`, err)
-        // Continue with other posts
+        const msg = `${brief.platform}: ${err}`
+        console.error(`[Orchestrator] Agent failed — ${msg}`)
+        agentErrors.push(msg)
       }
     }
 
@@ -190,6 +188,7 @@ export async function generateDailyCampaign(
       strategy_summary: campaignPlan.strategy_summary,
       objective: campaignPlan.objective,
       theme: campaignPlan.theme,
+      agent_errors: agentErrors.length > 0 ? agentErrors : undefined,
     }
 
   } catch (err) {

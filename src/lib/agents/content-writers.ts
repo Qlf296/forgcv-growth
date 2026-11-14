@@ -77,7 +77,7 @@ Return ONLY valid JSON matching the WrittenPost interface with:
 - media_description (what the visual should look like for image generation)
 `
 
-  const { content } = await runAgent('instagram', system, user, 2000)
+  const { content } = await runAgent('instagram', system, user, 3500)
   const parsed = parseJSON<WrittenPost>(content)
   if (!parsed) throw new Error('Instagram agent: invalid JSON')
   return { ...parsed, platform: 'instagram' }
@@ -107,7 +107,7 @@ Create a professional LinkedIn post or carousel.
 Return ONLY valid JSON matching the WrittenPost interface.
 `
 
-  const { content } = await runAgent('linkedin', system, user, 1500)
+  const { content } = await runAgent('linkedin', system, user, 2048)
   const parsed = parseJSON<WrittenPost>(content)
   if (!parsed) throw new Error('LinkedIn agent: invalid JSON')
   return { ...parsed, platform: 'linkedin' }
@@ -145,7 +145,7 @@ Write a genuine Reddit contribution. This should:
 Return ONLY valid JSON. Set media_type to "text".
 `
 
-  const { content } = await runAgent('reddit', system, user, 1500)
+  const { content } = await runAgent('reddit', system, user, 2048)
   const parsed = parseJSON<WrittenPost>(content)
   if (!parsed) throw new Error('Reddit agent: invalid JSON')
   return { ...parsed, platform: 'reddit' }
@@ -175,7 +175,7 @@ If thread: provide each tweet as a separate item in a carousel_slides array (use
 Return ONLY valid JSON.
 `
 
-  const { content } = await runAgent('twitter', system, user, 1000)
+  const { content } = await runAgent('twitter', system, user, 1500)
   const parsed = parseJSON<WrittenPost>(content)
   if (!parsed) throw new Error('Twitter agent: invalid JSON')
   return { ...parsed, platform: 'twitter' }
@@ -214,7 +214,7 @@ Create a complete TikTok video concept with:
 Return ONLY valid JSON with video_script populated.
 `
 
-  const { content } = await runAgent('tiktok', system, user, 2000)
+  const { content } = await runAgent('tiktok', system, user, 3000)
   const parsed = parseJSON<WrittenPost>(content)
   if (!parsed) throw new Error('TikTok agent: invalid JSON')
   return { ...parsed, platform: 'tiktok' }
@@ -250,7 +250,7 @@ Return JSON: {approved: boolean, score: 0-100, issues: [], suggestions: [], fina
 
   const user = `Review this post:\n${JSON.stringify(post, null, 2)}`
 
-  const { content } = await runAgent('quality_control', system, user, 500)
+  const { content } = await runAgent('quality_control', system, user, 1024)
   const parsed = parseJSON<QCResult>(content)
   return parsed || { approved: true, score: 80, issues: [], suggestions: [] }
 }
