@@ -24,6 +24,7 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true)
   const [approving, setApproving] = useState(false)
   const [generating, setGenerating] = useState(false)
+  const [publishing, setPublishing] = useState(false)
   const [message, setMessage] = useState('')
 
   const today = new Date().toLocaleDateString('en-US', {
@@ -66,6 +67,19 @@ export default function DashboardPage() {
       }
     } finally {
       setGenerating(false)
+    }
+  }
+
+  async function publishNow() {
+    setPublishing(true)
+    setMessage('Publishing scheduled posts...')
+    try {
+      const res = await fetch('/api/publish/now', { method: 'POST' })
+      const data = await res.json() as { published?: number; failed?: number; processed?: number }
+      setMessage(`Published: ${data.published} posts | Failed: ${data.failed}`)
+      await loadData()
+    } finally {
+      setPublishing(false)
     }
   }
 
@@ -133,6 +147,15 @@ export default function DashboardPage() {
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-lg font-semibold">Today&apos;s Campaign</h2>
             <div className="flex gap-2">
+              {scheduledPosts.length > 0 && (
+                <button
+                  onClick={publishNow}
+                  disabled={publishing}
+                  className="px-4 py-2 bg-green-700 hover:bg-green-600 disabled:opacity-50 rounded-lg text-sm font-medium transition-colors"
+                >
+                  {publishing ? '📤 Publishing...' : `📤 Publish Now (${scheduledPosts.length})`}
+                </button>
+              )}
               {!campaign && (
                 <button
                   onClick={generateCampaign}
