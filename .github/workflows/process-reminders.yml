@@ -1,0 +1,17 @@
+name: Process Reminders
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+
+jobs:
+  process:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger reminders
+        run: |
+          curl -s -X POST \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            -H "Content-Type: application/json" \
+            https://forgcv-growth.vercel.app/api/reminders/process
