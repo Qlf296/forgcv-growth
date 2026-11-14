@@ -95,7 +95,7 @@ Example structure:
 \`\`\`
 `
 
-  const { content, tokens_used } = await runAgent('researcher', SYSTEM_PROMPT, userMessage, 2048)
+  const { content, tokens_used } = await runAgent('researcher', SYSTEM_PROMPT, userMessage, 4096)
   const parsed = parseJSON<ResearchOutput>(content)
 
   if (!parsed) {
