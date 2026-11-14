@@ -1,7 +1,4 @@
-import Anthropic from '@anthropic-ai/sdk'
 import type { AgentRole, DailyPerformance, Post } from '@/types'
-
-const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
 export const FORGCV_CONTEXT = `
 ForgCV (https://forgcv.com) is a 100% free CV and cover letter generator.
@@ -46,28 +43,102 @@ export interface AgentOutput {
   error?: string
 }
 
-export async function runAgent(
-  agent: AgentRole,
+interface Provider {
+  name: string
+  url: string
+  apiKey: string | undefined
+  model: string
+  extraHeaders?: Record<string, string>
+}
+
+function getProviders(): Provider[] {
+  return [
+    {
+      name: 'openrouter',
+      url: 'https://openrouter.ai/api/v1/chat/completions',
+      apiKey: process.env.OPENROUTER_API_KEY,
+      model: 'anthropic/claude-3-haiku',
+      extraHeaders: {
+        'HTTP-Referer': 'https://forgcv-growth.vercel.app',
+        'X-Title': 'ForgCV Growth',
+      },
+    },
+    {
+      name: 'groq',
+      url: 'https://api.groq.com/openai/v1/chat/completions',
+      apiKey: process.env.GROQ_API_KEY,
+      model: 'llama-3.3-70b-versatile',
+    },
+    {
+      name: 'gemini',
+      url: 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions',
+      apiKey: process.env.GEMINI_API_KEY,
+      model: 'gemini-2.0-flash',
+    },
+  ]
+}
+
+async function callProvider(
+  provider: Provider,
   systemPrompt: string,
   userMessage: string,
-  maxTokens = 4096
+  maxTokens: number
 ): Promise<{ content: string; tokens_used: number }> {
-  const response = await client.messages.create({
-    model: 'claude-sonnet-4-6',
-    max_tokens: maxTokens,
-    system: systemPrompt,
-    messages: [{ role: 'user', content: userMessage }],
+  const res = await fetch(provider.url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${provider.apiKey}`,
+      ...provider.extraHeaders,
+    },
+    body: JSON.stringify({
+      model: provider.model,
+      max_tokens: maxTokens,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userMessage },
+      ],
+    }),
   })
 
-  const content = response.content[0].type === 'text' ? response.content[0].text : ''
-  const tokens_used = response.usage.input_tokens + response.usage.output_tokens
+  if (!res.ok) {
+    const err = await res.text()
+    throw new Error(`${provider.name} ${res.status}: ${err}`)
+  }
+
+  const data = await res.json()
+  const content: string = data.choices?.[0]?.message?.content ?? ''
+  if (!content) throw new Error(`${provider.name}: empty response`)
+
+  const tokens_used: number =
+    (data.usage?.prompt_tokens ?? 0) + (data.usage?.completion_tokens ?? 0)
 
   return { content, tokens_used }
 }
 
+export async function runAgent(
+  _agent: AgentRole,
+  systemPrompt: string,
+  userMessage: string,
+  maxTokens = 4096
+): Promise<{ content: string; tokens_used: number }> {
+  const providers = getProviders()
+  const errors: string[] = []
+
+  for (const provider of providers) {
+    if (!provider.apiKey) continue
+    try {
+      return await callProvider(provider, systemPrompt, userMessage, maxTokens)
+    } catch (err) {
+      errors.push(`${provider.name}: ${err}`)
+    }
+  }
+
+  throw new Error(`All AI providers failed:\n${errors.join('\n')}`)
+}
+
 export function buildDateContext(date: string): string {
   const d = new Date(date)
-  const dayName = d.toLocaleDateString('en-US', { weekday: 'long', timeZone: 'Europe/Amsterdam' })
   const dateStr = d.toLocaleDateString('en-US', {
     weekday: 'long',
     year: 'numeric',
@@ -75,7 +146,7 @@ export function buildDateContext(date: string): string {
     day: 'numeric',
     timeZone: 'Europe/Amsterdam',
   })
-  return `Today is ${dateStr} (${dayName})`
+  return `Today is ${dateStr}`
 }
 
 export function parseJSON<T>(text: string): T | null {
