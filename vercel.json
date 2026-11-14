@@ -3,6 +3,10 @@
     {
       "path": "/api/briefing/generate",
       "schedule": "0 6 * * *"
+    },
+    {
+      "path": "/api/reminders/process",
+      "schedule": "*/30 * * * *"
     }
   ]
 }

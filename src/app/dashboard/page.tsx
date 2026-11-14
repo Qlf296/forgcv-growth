@@ -1,8 +1,11 @@
 'use client'
 
-import { useEffect, useState } from 'react'
-import { formatTime, PLATFORM_ICONS, STATUS_COLORS } from '@/lib/utils'
+import { useEffect, useState, useCallback } from 'react'
+import { formatTime, formatDate, PLATFORM_ICONS, STATUS_COLORS } from '@/lib/utils'
 import type { Campaign, Post } from '@/types'
+
+// ── Types ────────────────────────────────────────────────────
+type Tab = 'today' | 'studio' | 'calendar' | 'accounts' | 'learning' | 'system'
 
 interface AccountStatus {
   connected: boolean
@@ -10,7 +13,6 @@ interface AccountStatus {
   username?: string
   note?: string
   error?: string
-  api_status?: string
 }
 
 interface AccountsData {
@@ -18,266 +20,400 @@ interface AccountsData {
   summary: { total: number; connected: number; publishable: number; action_required: number }
 }
 
+interface HealthData {
+  status: string
+  today: { campaign_status: string; campaign_id: string | null; campaign_theme: string | null }
+  scheduler: { next_briefing_local: string; overdue_reminders: number }
+  database: { connected: boolean; recent_events: SystemEvent[] }
+  ai: { providers: string[] }
+  telegram: { configured: boolean; bot_username: string; webhook_url: string | null; webhook_active: boolean }
+}
+
+interface SystemEvent {
+  event_type: string
+  status: 'success' | 'warning' | 'error' | 'info'
+  message: string
+  created_at: string
+}
+
+interface HistoryCampaign {
+  id: string
+  date: string
+  status: string
+  theme: string
+  posts: { platform: string; status: string; scheduled_at: string }[]
+}
+
+// ── Main Dashboard ───────────────────────────────────────────
 export default function DashboardPage() {
+  const [activeTab, setActiveTab] = useState<Tab>('today')
   const [campaign, setCampaign] = useState<Campaign | null>(null)
   const [accounts, setAccounts] = useState<AccountsData | null>(null)
+  const [health, setHealth] = useState<HealthData | null>(null)
+  const [history, setHistory] = useState<HistoryCampaign[]>([])
   const [loading, setLoading] = useState(true)
-  const [approving, setApproving] = useState(false)
   const [generating, setGenerating] = useState(false)
-  const [publishing, setPublishing] = useState(false)
-  const [message, setMessage] = useState('')
+  const [approving, setApproving] = useState(false)
+  const [toast, setToast] = useState('')
+
+  const showToast = (msg: string) => {
+    setToast(msg)
+    setTimeout(() => setToast(''), 4000)
+  }
 
   const today = new Date().toLocaleDateString('en-US', {
     weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
     timeZone: 'Europe/Amsterdam',
   })
 
-  // Show success toast after OAuth connect redirect
   useEffect(() => {
     const params = new URLSearchParams(window.location.search)
     const connected = params.get('connected')
     const error = params.get('connect_error')
-    if (connected) setMessage(`✅ ${connected.charAt(0).toUpperCase() + connected.slice(1)} connected successfully!`)
-    if (error) setMessage(`❌ Failed to connect ${error}: ${params.get('reason') || 'unknown error'}`)
+    if (connected) showToast(`✅ ${connected.charAt(0).toUpperCase() + connected.slice(1)} connected!`)
+    if (error) showToast(`❌ Failed to connect ${error}: ${params.get('reason') || 'unknown error'}`)
     if (connected || error) window.history.replaceState({}, '', '/dashboard')
   }, [])
 
-  async function loadData() {
+  const loadData = useCallback(async () => {
     setLoading(true)
     try {
-      const [campaignRes, accountsRes] = await Promise.all([
+      const [campaignRes, accountsRes, healthRes, historyRes] = await Promise.all([
         fetch('/api/briefing/generate', { method: 'GET' }).then(r => r.json()).catch(() => null),
         fetch('/api/accounts/status').then(r => r.json()).catch(() => null),
+        fetch('/api/health').then(r => r.json()).catch(() => null),
+        fetch('/api/campaigns?limit=10').then(r => r.json()).catch(() => null),
       ])
-
-      if (campaignRes?.campaign) setCampaign(campaignRes.campaign)
-      if (accountsRes) setAccounts(accountsRes)
+      if (campaignRes?.campaign) setCampaign(campaignRes.campaign as Campaign)
+      if (accountsRes) setAccounts(accountsRes as AccountsData)
+      if (healthRes) setHealth(healthRes as HealthData)
+      if (historyRes?.campaigns) setHistory(historyRes.campaigns as HistoryCampaign[])
     } finally {
       setLoading(false)
     }
-  }
+  }, [])
 
-  useEffect(() => { loadData() }, [])
+  useEffect(() => { loadData() }, [loadData])
 
   async function generateCampaign() {
     setGenerating(true)
-    setMessage('Generating today\'s campaign with AI agents...')
+    showToast('Generating today\'s campaign with AI agents...')
     try {
       const res = await fetch('/api/briefing/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ manual: true }),
       })
-      const data = await res.json() as { success?: boolean; message?: string; error?: string }
+      const data = await res.json() as { success?: boolean; error?: string; message?: string }
       if (data.success || data.message) {
-        setMessage('Campaign generated! Reloading...')
+        showToast('✅ Campaign generated!')
         await loadData()
       } else {
-        setMessage(`Error: ${data.error}`)
+        showToast(`❌ Error: ${data.error}`)
       }
     } finally {
       setGenerating(false)
     }
   }
 
-  async function publishNow() {
-    setPublishing(true)
-    setMessage('Publishing scheduled posts...')
-    try {
-      const res = await fetch('/api/publish/now', { method: 'POST' })
-      const data = await res.json() as { published?: number; failed?: number; processed?: number }
-      setMessage(`Published: ${data.published} posts | Failed: ${data.failed}`)
-      await loadData()
-    } finally {
-      setPublishing(false)
-    }
-  }
-
   async function approveCampaign() {
     if (!campaign) return
     setApproving(true)
-    setMessage('Approving campaign and scheduling posts...')
+    showToast('Approving campaign and scheduling reminders...')
     try {
       const res = await fetch(`/api/campaigns/${campaign.id}/approve`, { method: 'POST' })
       const data = await res.json() as { message?: string; error?: string }
-      setMessage(data.message || data.error || 'Done')
+      showToast(data.message || data.error || 'Done')
       await loadData()
     } finally {
       setApproving(false)
     }
   }
 
+  async function runWebsiteAudit() {
+    showToast('Running website audit...')
+    const res = await fetch('/api/audit/website', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ manual: true }),
+    })
+    const data = await res.json() as { success?: boolean }
+    showToast(data.success ? '✅ Website audit complete' : '❌ Audit failed')
+    await loadData()
+  }
+
+  async function setupTelegramWebhook() {
+    showToast('Registering Telegram webhook...')
+    const res = await fetch('/api/telegram/setup', { method: 'POST' })
+    const data = await res.json() as { success?: boolean; description?: string }
+    showToast(data.success ? '✅ Telegram webhook registered!' : `❌ Failed: ${data.description}`)
+    await loadData()
+  }
+
+  async function generateWeeklyReport() {
+    showToast('Generating weekly report...')
+    const res = await fetch('/api/reports/weekly', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ manual: true }),
+    })
+    const data = await res.json() as { success?: boolean }
+    showToast(data.success ? '✅ Weekly report sent to Telegram!' : '❌ Report generation failed')
+  }
+
   const pendingPosts = campaign?.posts?.filter(p => p.status === 'awaiting_approval') || []
   const scheduledPosts = campaign?.posts?.filter(p => p.status === 'scheduled') || []
   const publishedPosts = campaign?.posts?.filter(p => p.status === 'published') || []
 
+  const tabs: { id: Tab; label: string; badge?: number }[] = [
+    { id: 'today', label: '🌅 Today', badge: pendingPosts.length || undefined },
+    { id: 'studio', label: '✏️ Studio' },
+    { id: 'calendar', label: '📅 Calendar' },
+    { id: 'accounts', label: '📱 Accounts' },
+    { id: 'learning', label: '📚 Learning' },
+    { id: 'system', label: '⚙️ System' },
+  ]
+
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100">
       {/* Header */}
-      <header className="border-b border-slate-800 bg-slate-900 sticky top-0 z-10">
-        <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
+      <header className="border-b border-slate-800 bg-slate-900/80 backdrop-blur sticky top-0 z-20">
+        <div className="max-w-7xl mx-auto px-4 h-14 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-lg brand-gradient flex items-center justify-center text-white font-bold text-sm">F</div>
-            <div>
-              <span className="font-semibold text-white">ForgCV</span>
-              <span className="text-slate-400 text-sm ml-2">Growth Command Center</span>
-            </div>
+            <div className="w-7 h-7 rounded-lg brand-gradient flex items-center justify-center text-white font-bold text-xs">F</div>
+            <span className="font-semibold text-white text-sm">ForgCV Growth</span>
+            <span className="hidden md:block text-slate-500 text-xs">Command Center</span>
           </div>
           <div className="flex items-center gap-3">
             <a href="https://forgcv.com" target="_blank" rel="noopener noreferrer"
-              className="text-xs text-slate-400 hover:text-white transition-colors">
-              forgcv.com ↗
-            </a>
-            <div className="text-xs text-slate-500">{today}</div>
+              className="text-xs text-slate-400 hover:text-indigo-400 transition-colors">forgcv.com ↗</a>
+            <div className="text-xs text-slate-600 hidden md:block">{today}</div>
           </div>
+        </div>
+
+        {/* Tab nav */}
+        <div className="max-w-7xl mx-auto px-4 flex gap-1 overflow-x-auto pb-0 scrollbar-hide">
+          {tabs.map(tab => (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id)}
+              className={`flex items-center gap-1.5 px-3 py-2 text-xs font-medium border-b-2 transition-colors whitespace-nowrap ${
+                activeTab === tab.id
+                  ? 'border-indigo-500 text-white'
+                  : 'border-transparent text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              {tab.label}
+              {tab.badge ? (
+                <span className="bg-yellow-500 text-black text-xs px-1.5 py-0.5 rounded-full font-bold">
+                  {tab.badge}
+                </span>
+              ) : null}
+            </button>
+          ))}
         </div>
       </header>
 
-      <main className="max-w-7xl mx-auto px-4 py-8 space-y-8">
+      {/* Toast */}
+      {toast && (
+        <div className="fixed top-16 left-1/2 -translate-x-1/2 z-50 bg-slate-800 border border-slate-600 rounded-lg px-4 py-2 text-sm text-white shadow-xl max-w-md text-center">
+          {toast}
+        </div>
+      )}
 
-        {/* Status message */}
-        {message && (
-          <div className="bg-indigo-900/50 border border-indigo-700 rounded-lg p-4 text-sm text-indigo-200">
-            {message}
-          </div>
+      <main className="max-w-7xl mx-auto px-4 py-6">
+        {activeTab === 'today' && (
+          <TodayTab
+            campaign={campaign}
+            accounts={accounts}
+            pendingPosts={pendingPosts}
+            scheduledPosts={scheduledPosts}
+            publishedPosts={publishedPosts}
+            loading={loading}
+            generating={generating}
+            approving={approving}
+            onGenerate={generateCampaign}
+            onApprove={approveCampaign}
+            onUpdate={loadData}
+            showToast={showToast}
+          />
         )}
 
-        {/* Stats row */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <StatCard label="Pending Approval" value={pendingPosts.length} color="text-yellow-400" />
-          <StatCard label="Scheduled Today" value={scheduledPosts.length} color="text-blue-400" />
-          <StatCard label="Published Today" value={publishedPosts.length} color="text-green-400" />
-          <StatCard label="Connected Accounts"
-            value={`${accounts?.summary?.connected ?? '—'}/${accounts?.summary?.total ?? 5}`}
-            color={accounts?.summary?.connected === accounts?.summary?.total ? 'text-green-400' : 'text-orange-400'} />
-        </div>
+        {activeTab === 'studio' && (
+          <StudioTab
+            campaign={campaign}
+            loading={loading}
+            onUpdate={loadData}
+            showToast={showToast}
+          />
+        )}
 
-        {/* Today's Campaign */}
-        <section>
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-lg font-semibold">Today&apos;s Campaign</h2>
-            <div className="flex gap-2">
-              {scheduledPosts.length > 0 && (
-                <button
-                  onClick={publishNow}
-                  disabled={publishing}
-                  className="px-4 py-2 bg-green-700 hover:bg-green-600 disabled:opacity-50 rounded-lg text-sm font-medium transition-colors"
-                >
-                  {publishing ? '📤 Publishing...' : `📤 Publish Now (${scheduledPosts.length})`}
-                </button>
-              )}
-              {!campaign && (
-                <button
-                  onClick={generateCampaign}
-                  disabled={generating}
-                  className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 rounded-lg text-sm font-medium transition-colors"
-                >
-                  {generating ? '⚡ Generating...' : '⚡ Generate Campaign'}
-                </button>
-              )}
-              {pendingPosts.length > 0 && (
-                <button
-                  onClick={approveCampaign}
-                  disabled={approving}
-                  className="px-6 py-2 brand-gradient hover:opacity-90 disabled:opacity-50 rounded-lg text-sm font-bold text-white transition-opacity shadow-lg shadow-indigo-900/50"
-                >
-                  {approving ? '⏳ Approving...' : `✅ Approve & Schedule ${pendingPosts.length} Posts`}
-                </button>
-              )}
-            </div>
-          </div>
+        {activeTab === 'calendar' && (
+          <CalendarTab history={history} loading={loading} />
+        )}
 
-          {loading ? (
-            <div className="card p-8 text-center text-slate-400">Loading...</div>
-          ) : !campaign ? (
-            <div className="card p-12 text-center">
-              <div className="text-4xl mb-4">🌅</div>
-              <h3 className="text-lg font-medium mb-2">No campaign yet</h3>
-              <p className="text-slate-400 text-sm mb-6">Click &quot;Generate Campaign&quot; to have the AI agents create today&apos;s marketing plan.</p>
-              <button onClick={generateCampaign} disabled={generating}
-                className="px-6 py-3 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 rounded-xl font-medium transition-colors">
-                {generating ? '⚡ Generating...' : '⚡ Generate Today\'s Campaign'}
-              </button>
-            </div>
-          ) : (
-            <div className="space-y-4">
-              {/* Campaign header */}
-              <div className="card p-6">
-                <div className="flex items-start justify-between">
-                  <div>
-                    <div className="flex items-center gap-2 mb-1">
-                      <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
-                        campaign.status === 'ready_for_review' ? 'bg-yellow-900/50 text-yellow-400' :
-                        campaign.status === 'approved' ? 'bg-blue-900/50 text-blue-400' :
-                        campaign.status === 'published' ? 'bg-green-900/50 text-green-400' :
-                        'bg-slate-800 text-slate-400'
-                      }`}>
-                        {campaign.status.replace(/_/g, ' ').toUpperCase()}
-                      </span>
-                    </div>
-                    <h3 className="text-xl font-bold text-white">{campaign.theme || 'Today\'s Campaign'}</h3>
-                    <p className="text-slate-400 mt-1 text-sm">{campaign.objective}</p>
-                  </div>
-                </div>
-                {campaign.strategy_summary && (
-                  <p className="mt-4 text-slate-300 text-sm border-t border-slate-800 pt-4">
-                    {campaign.strategy_summary}
-                  </p>
-                )}
-              </div>
+        {activeTab === 'accounts' && (
+          <AccountsTab accounts={accounts} loading={loading} />
+        )}
 
-              {/* Posts grid */}
-              <div className="grid gap-4">
-                {campaign.posts?.map(post => (
-                  <PostCard key={post.id} post={post} onUpdate={loadData} />
-                ))}
-              </div>
-            </div>
-          )}
-        </section>
+        {activeTab === 'learning' && <LearningTab />}
 
-        {/* Social Accounts */}
-        <section>
-          <h2 className="text-lg font-semibold mb-4">Social Accounts</h2>
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-            {accounts && Object.entries(accounts.statuses).map(([platform, status]) => (
-              <AccountCard key={platform} platform={platform} status={status} />
-            ))}
-            {!accounts && [1,2,3,4,5].map(i => (
-              <div key={i} className="card p-4 animate-pulse h-24" />
-            ))}
-          </div>
-          {accounts && accounts.summary.action_required > 0 && (
-            <div className="mt-3 p-4 bg-orange-900/20 border border-orange-800 rounded-lg text-sm text-orange-300">
-              <strong>{accounts.summary.action_required} account(s) need setup.</strong> Check the setup guide below to connect your social accounts.
-            </div>
-          )}
-        </section>
-
-        {/* Setup Guide */}
-        <section>
-          <h2 className="text-lg font-semibold mb-4">Setup Guide</h2>
-          <SetupGuide accounts={accounts} />
-        </section>
-
+        {activeTab === 'system' && (
+          <SystemTab
+            health={health}
+            loading={loading}
+            onAudit={runWebsiteAudit}
+            onSetupWebhook={setupTelegramWebhook}
+            onWeeklyReport={generateWeeklyReport}
+          />
+        )}
       </main>
     </div>
   )
 }
 
-function StatCard({ label, value, color }: { label: string; value: string | number; color: string }) {
+// ── Today Tab ────────────────────────────────────────────────
+function TodayTab({
+  campaign, accounts, pendingPosts, scheduledPosts, publishedPosts,
+  loading, generating, approving, onGenerate, onApprove, onUpdate, showToast,
+}: {
+  campaign: Campaign | null
+  accounts: AccountsData | null
+  pendingPosts: Post[]
+  scheduledPosts: Post[]
+  publishedPosts: Post[]
+  loading: boolean
+  generating: boolean
+  approving: boolean
+  onGenerate: () => void
+  onApprove: () => void
+  onUpdate: () => void
+  showToast: (m: string) => void
+}) {
   return (
-    <div className="card p-4">
-      <div className={`text-2xl font-bold ${color}`}>{value}</div>
-      <div className="text-xs text-slate-400 mt-1">{label}</div>
+    <div className="space-y-6">
+      {/* Stats */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <StatCard label="Awaiting Approval" value={pendingPosts.length} color="text-yellow-400" />
+        <StatCard label="Scheduled" value={scheduledPosts.length} color="text-blue-400" />
+        <StatCard label="Published Today" value={publishedPosts.length} color="text-green-400" />
+        <StatCard
+          label="Accounts Ready"
+          value={`${accounts?.summary?.publishable ?? '—'}/${accounts?.summary?.total ?? 5}`}
+          color={accounts?.summary?.publishable === accounts?.summary?.total ? 'text-green-400' : 'text-orange-400'}
+        />
+      </div>
+
+      {/* Campaign */}
+      <section>
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="text-base font-semibold">Today&apos;s Campaign</h2>
+          <div className="flex gap-2">
+            {!campaign && (
+              <button onClick={onGenerate} disabled={generating}
+                className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 rounded-lg text-xs font-medium transition-colors">
+                {generating ? '⚡ Generating...' : '⚡ Generate Campaign'}
+              </button>
+            )}
+            {pendingPosts.length > 0 && (
+              <button onClick={onApprove} disabled={approving}
+                className="px-4 py-1.5 brand-gradient hover:opacity-90 disabled:opacity-50 rounded-lg text-xs font-bold text-white transition-opacity">
+                {approving ? '⏳ Approving...' : `✅ Approve ${pendingPosts.length} Posts`}
+              </button>
+            )}
+          </div>
+        </div>
+
+        {loading ? (
+          <div className="card p-8 text-center text-slate-400 text-sm">Loading...</div>
+        ) : !campaign ? (
+          <div className="card p-10 text-center">
+            <div className="text-4xl mb-3">🌅</div>
+            <h3 className="text-base font-medium mb-1">No campaign yet today</h3>
+            <p className="text-slate-400 text-sm mb-5">AI agents will analyze the market and create today&apos;s posts.</p>
+            <button onClick={onGenerate} disabled={generating}
+              className="px-5 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 rounded-xl font-medium text-sm transition-colors">
+              {generating ? '⚡ Generating...' : '⚡ Generate Today\'s Campaign'}
+            </button>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            <div className="card p-5">
+              <div className="flex items-start gap-3">
+                <span className={`text-xs px-2 py-0.5 rounded-full font-medium flex-shrink-0 ${
+                  campaign.status === 'ready_for_review' ? 'bg-yellow-900/50 text-yellow-400' :
+                  campaign.status === 'approved' ? 'bg-blue-900/50 text-blue-400' :
+                  campaign.status === 'published' ? 'bg-green-900/50 text-green-400' :
+                  'bg-slate-800 text-slate-400'
+                }`}>{campaign.status.replace(/_/g, ' ').toUpperCase()}</span>
+              </div>
+              <h3 className="text-lg font-bold text-white mt-2">{campaign.theme}</h3>
+              <p className="text-slate-400 text-sm mt-1">{campaign.objective}</p>
+              {campaign.strategy_summary && (
+                <p className="text-slate-300 text-sm mt-3 pt-3 border-t border-slate-800">
+                  {campaign.strategy_summary}
+                </p>
+              )}
+            </div>
+            {campaign.posts?.map(post => (
+              <PostCard key={post.id} post={post} onUpdate={onUpdate} showToast={showToast} compact />
+            ))}
+          </div>
+        )}
+      </section>
     </div>
   )
 }
 
-function PostCard({ post, onUpdate }: { post: Post; onUpdate: () => void }) {
+// ── Studio Tab ───────────────────────────────────────────────
+function StudioTab({ campaign, loading, onUpdate, showToast }: {
+  campaign: Campaign | null
+  loading: boolean
+  onUpdate: () => void
+  showToast: (m: string) => void
+}) {
+  if (loading) return <div className="card p-8 text-center text-slate-400 text-sm">Loading...</div>
+  if (!campaign?.posts?.length) {
+    return (
+      <div className="card p-10 text-center">
+        <div className="text-4xl mb-3">✏️</div>
+        <p className="text-slate-400 text-sm">No content yet. Generate today&apos;s campaign first.</p>
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-5">
+      <p className="text-slate-400 text-sm">{campaign.posts.length} posts generated for today</p>
+      {campaign.posts.map(post => (
+        <PostCard key={post.id} post={post} onUpdate={onUpdate} showToast={showToast} compact={false} />
+      ))}
+    </div>
+  )
+}
+
+// ── Post Card ────────────────────────────────────────────────
+function PostCard({ post, onUpdate, showToast, compact }: {
+  post: Post
+  onUpdate: () => void
+  showToast: (m: string) => void
+  compact: boolean
+}) {
   const [editing, setEditing] = useState(false)
-  const [caption, setCaption] = useState(post.caption)
+  const [caption, setCaption] = useState(post.caption || '')
+  const [expanded, setExpanded] = useState(!compact)
   const [saving, setSaving] = useState(false)
+  const [marking, setMarking] = useState(false)
+
+  const scheduledTime = formatTime(post.scheduled_at)
+  const hashtags = (post.hashtags || []).map((h: string) => `#${h}`).join(' ')
+
+  async function copyText(text: string, label: string) {
+    try {
+      await navigator.clipboard.writeText(text)
+      showToast(`✓ ${label} copied to clipboard`)
+    } catch {
+      showToast('Copy failed — please select and copy manually')
+    }
+  }
 
   async function saveEdit() {
     setSaving(true)
@@ -289,247 +425,666 @@ function PostCard({ post, onUpdate }: { post: Post; onUpdate: () => void }) {
     setSaving(false)
     setEditing(false)
     onUpdate()
+    showToast('✅ Caption saved')
+  }
+
+  async function markPublished() {
+    setMarking(true)
+    await fetch(`/api/posts/${post.id}/mark-published`, { method: 'POST' })
+    setMarking(false)
+    onUpdate()
+    showToast('✅ Marked as published — reminders cancelled')
   }
 
   async function cancelPost() {
-    if (!confirm('Cancel this post?')) return
+    if (!confirm('Skip this post?')) return
     await fetch(`/api/posts/${post.id}`, { method: 'DELETE' })
     onUpdate()
+    showToast('⏭️ Post skipped')
   }
 
-  const scheduledTime = formatTime(post.scheduled_at)
+  const canMarkPublished = ['scheduled', 'approved', 'awaiting_approval'].includes(post.status)
+  const isPublished = post.status === 'published'
 
   return (
-    <div className="card p-5">
-      <div className="flex items-start justify-between gap-4">
-        <div className="flex items-center gap-3 flex-shrink-0">
-          <span className="text-2xl">{PLATFORM_ICONS[post.platform] || '📱'}</span>
-          <div>
-            <div className="font-medium capitalize text-sm">{post.platform}</div>
-            <div className="text-xs text-slate-500">{post.format} · {scheduledTime}</div>
-          </div>
-        </div>
-
+    <div className={`card overflow-hidden ${isPublished ? 'opacity-70' : ''}`}>
+      {/* Header row */}
+      <div
+        className="p-4 flex items-center gap-3 cursor-pointer"
+        onClick={() => compact && setExpanded(e => !e)}
+      >
+        <span className="text-xl flex-shrink-0">{PLATFORM_ICONS[post.platform] || '📱'}</span>
         <div className="flex-1 min-w-0">
-          <div className="font-medium text-sm text-white mb-1">{post.title}</div>
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="font-semibold text-sm capitalize">{post.platform}</span>
+            <span className="text-xs text-slate-500">{post.format}</span>
+            <span className="text-xs text-slate-500">·</span>
+            <span className="text-xs text-slate-500">{scheduledTime}</span>
+            <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${STATUS_COLORS[post.status] || 'bg-slate-700 text-slate-300'}`}>
+              {post.status.replace(/_/g, ' ')}
+            </span>
+          </div>
+          {compact && !expanded && (
+            <p className="text-xs text-slate-400 mt-0.5 line-clamp-1">{post.title || post.caption?.slice(0, 80)}</p>
+          )}
+        </div>
+        {compact && (
+          <span className="text-slate-600 text-xs">{expanded ? '▲' : '▼'}</span>
+        )}
+      </div>
 
-          {editing ? (
-            <div className="mt-2">
-              <textarea
-                value={caption}
-                onChange={e => setCaption(e.target.value)}
-                className="w-full bg-slate-800 border border-slate-700 rounded-lg p-3 text-sm text-slate-200 resize-none h-32"
-              />
-              <div className="flex gap-2 mt-2">
-                <button onClick={saveEdit} disabled={saving}
-                  className="text-xs px-3 py-1 bg-indigo-600 rounded-md">
-                  {saving ? 'Saving...' : 'Save'}
-                </button>
-                <button onClick={() => setEditing(false)}
-                  className="text-xs px-3 py-1 bg-slate-700 rounded-md">
-                  Cancel
-                </button>
+      {/* Expanded content */}
+      {(!compact || expanded) && (
+        <div className="px-4 pb-4 space-y-4 border-t border-slate-800 pt-4">
+          {/* Title */}
+          {post.title && (
+            <div>
+              <span className="text-xs text-slate-500 uppercase tracking-wide">Title</span>
+              <p className="text-sm font-medium text-white mt-1">{post.title}</p>
+            </div>
+          )}
+
+          {/* Caption */}
+          <div>
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-xs text-slate-500 uppercase tracking-wide">Caption</span>
+              <div className="flex gap-2">
+                <button onClick={() => copyText(post.caption || '', 'Caption')}
+                  className="text-xs text-indigo-400 hover:text-indigo-300">Copy</button>
+                {!editing && post.status !== 'published' && (
+                  <button onClick={() => { setEditing(true); setCaption(post.caption || '') }}
+                    className="text-xs text-slate-400 hover:text-slate-200">Edit</button>
+                )}
               </div>
             </div>
-          ) : (
-            <p className="text-xs text-slate-400 line-clamp-2">{post.caption}</p>
-          )}
+            {editing ? (
+              <div>
+                <textarea
+                  value={caption}
+                  onChange={e => setCaption(e.target.value)}
+                  className="w-full bg-slate-800 border border-slate-700 rounded-lg p-3 text-sm text-slate-200 resize-none h-40"
+                />
+                <div className="flex gap-2 mt-2">
+                  <button onClick={saveEdit} disabled={saving}
+                    className="text-xs px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 rounded-md">
+                    {saving ? 'Saving...' : 'Save'}
+                  </button>
+                  <button onClick={() => setEditing(false)}
+                    className="text-xs px-3 py-1.5 bg-slate-700 hover:bg-slate-600 rounded-md">
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <p className="text-sm text-slate-300 whitespace-pre-wrap leading-relaxed bg-slate-900 rounded-lg p-3">
+                {post.caption || '—'}
+              </p>
+            )}
+          </div>
 
-          {post.hashtags?.length > 0 && !editing && (
-            <div className="mt-1 text-xs text-indigo-400">
-              {post.hashtags.slice(0, 5).map((h: string) => `#${h}`).join(' ')}
+          {/* Hashtags */}
+          {hashtags && (
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-xs text-slate-500 uppercase tracking-wide">Hashtags</span>
+                <button onClick={() => copyText(hashtags, 'Hashtags')}
+                  className="text-xs text-indigo-400 hover:text-indigo-300">Copy</button>
+              </div>
+              <p className="text-xs text-indigo-400 bg-slate-900 rounded-lg p-2 font-mono leading-relaxed">{hashtags}</p>
             </div>
           )}
-        </div>
 
-        <div className="flex flex-col items-end gap-2 flex-shrink-0">
-          <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${STATUS_COLORS[post.status] || 'bg-slate-700 text-slate-300'}`}>
-            {post.status.replace(/_/g, ' ')}
-          </span>
+          {/* CTA + Link */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {post.cta && (
+              <div>
+                <span className="text-xs text-slate-500 uppercase tracking-wide">Call to Action</span>
+                <p className="text-sm text-slate-300 mt-1">{post.cta}</p>
+              </div>
+            )}
+            {post.destination_url && (
+              <div>
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-slate-500 uppercase tracking-wide">Link (with UTM)</span>
+                  <button onClick={() => copyText(post.destination_url, 'URL')}
+                    className="text-xs text-indigo-400 hover:text-indigo-300">Copy</button>
+                </div>
+                <a href={post.destination_url} target="_blank" rel="noopener noreferrer"
+                  className="text-xs text-indigo-400 hover:underline break-all mt-1 block">
+                  {post.destination_url}
+                </a>
+              </div>
+            )}
+          </div>
 
-          {post.status === 'awaiting_approval' && (
-            <div className="flex gap-1">
-              <button onClick={() => setEditing(true)}
-                className="text-xs px-2 py-1 bg-slate-800 hover:bg-slate-700 rounded-md transition-colors">
-                Edit
+          {/* Strategy */}
+          {post.strategy_explanation && (
+            <details className="text-sm">
+              <summary className="text-xs text-slate-500 cursor-pointer hover:text-slate-300 uppercase tracking-wide">Strategy & KPI</summary>
+              <div className="mt-2 text-slate-400 text-xs space-y-1 pl-2 border-l border-slate-700">
+                <p><span className="text-slate-500">Objective:</span> {post.objective}</p>
+                <p><span className="text-slate-500">KPI:</span> {post.expected_kpi}</p>
+                <p><span className="text-slate-500">Audience:</span> {post.target_audience}</p>
+                <p>{post.strategy_explanation}</p>
+              </div>
+            </details>
+          )}
+
+          {/* Action buttons */}
+          <div className="flex flex-wrap gap-2 pt-2 border-t border-slate-800">
+            {canMarkPublished && !isPublished && (
+              <button onClick={markPublished} disabled={marking}
+                className="text-xs px-3 py-1.5 bg-green-800 hover:bg-green-700 text-green-200 rounded-lg font-medium transition-colors">
+                {marking ? '⏳...' : '✅ Mark as Published'}
               </button>
+            )}
+            {post.status !== 'published' && post.status !== 'cancelled' && (
               <button onClick={cancelPost}
-                className="text-xs px-2 py-1 bg-red-900/50 hover:bg-red-900 text-red-300 rounded-md transition-colors">
-                Cancel
+                className="text-xs px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-400 rounded-lg transition-colors">
+                ⏭️ Skip
               </button>
-            </div>
-          )}
-
-          {post.failure_reason && (
-            <div className="text-xs text-red-400 max-w-32 text-right">{post.failure_reason}</div>
-          )}
-        </div>
-      </div>
-
-      {post.expected_kpi && (
-        <div className="mt-3 pt-3 border-t border-slate-800 text-xs text-slate-500">
-          <span className="text-slate-400">Target KPI:</span> {post.expected_kpi}
-        </div>
-      )}
-
-      {post.destination_url && (
-        <div className="mt-1 text-xs">
-          <span className="text-slate-500">→ </span>
-          <a href={post.destination_url} target="_blank" rel="noopener noreferrer"
-            className="text-indigo-400 hover:underline">{post.destination_url}</a>
+            )}
+            {isPublished && post.published_at && (
+              <span className="text-xs text-green-400">
+                ✅ Published {formatTime(post.published_at)}
+              </span>
+            )}
+          </div>
         </div>
       )}
     </div>
   )
 }
 
-function AccountCard({ platform, status }: { platform: string; status: AccountStatus }) {
-  const connectUrl = `/api/auth/connect/${platform}`
-  const isTikTok = platform === 'tiktok'
+// ── Calendar Tab ─────────────────────────────────────────────
+function CalendarTab({ history, loading }: { history: HistoryCampaign[]; loading: boolean }) {
+  if (loading) return <div className="card p-8 text-center text-slate-400 text-sm">Loading...</div>
+  if (!history.length) return (
+    <div className="card p-10 text-center">
+      <p className="text-slate-400 text-sm">No campaign history yet.</p>
+    </div>
+  )
 
   return (
-    <div className="card p-4 flex flex-col gap-2">
-      <div className="flex items-center gap-2">
-        <span className="text-xl">{PLATFORM_ICONS[platform] || '📱'}</span>
-        <span className="font-medium text-sm capitalize">{platform}</span>
-      </div>
-      <div className={`text-xs font-medium ${
-        status.can_publish ? 'text-green-400' :
-        status.connected ? 'text-yellow-400' : 'text-slate-500'
-      }`}>
-        {status.can_publish ? '✓ Ready to publish' :
-         status.connected ? '⚠ Connected, limited' : '○ Not connected'}
-      </div>
-      {status.username && (
-        <div className="text-xs text-slate-500">@{status.username}</div>
-      )}
-      {!status.can_publish && (
-        <a
-          href={connectUrl}
-          className="mt-auto text-xs text-center px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-md transition-colors font-medium"
-          title={isTikTok ? 'TikTok requires API audit approval (2–4 weeks)' : `Connect ${platform}`}
-        >
-          {isTikTok ? '⏳ Audit Pending' : '＋ Connect'}
-        </a>
-      )}
-      {status.can_publish && (
-        <a href={connectUrl} className="text-xs text-slate-600 hover:text-slate-400 text-center transition-colors">
-          Reconnect
-        </a>
-      )}
+    <div className="space-y-3">
+      <p className="text-slate-400 text-sm">Last {history.length} campaigns</p>
+      {history.map(c => {
+        const published = c.posts?.filter(p => p.status === 'published').length || 0
+        const total = c.posts?.length || 0
+        return (
+          <div key={c.id} className="card p-4">
+            <div className="flex items-start justify-between">
+              <div>
+                <div className="flex items-center gap-2 mb-1">
+                  <span className="text-sm font-medium text-white">{formatDate(c.date)}</span>
+                  <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+                    c.status === 'published' ? 'bg-green-900/50 text-green-400' :
+                    c.status === 'approved' ? 'bg-blue-900/50 text-blue-400' :
+                    c.status === 'ready_for_review' ? 'bg-yellow-900/50 text-yellow-400' :
+                    'bg-slate-800 text-slate-400'
+                  }`}>{c.status.replace(/_/g, ' ')}</span>
+                </div>
+                <p className="text-xs text-slate-400">{c.theme}</p>
+              </div>
+              <div className="text-right">
+                <span className="text-sm font-bold text-white">{published}/{total}</span>
+                <div className="text-xs text-slate-500">published</div>
+              </div>
+            </div>
+            {c.posts?.length > 0 && (
+              <div className="mt-3 flex flex-wrap gap-1.5">
+                {c.posts.map((p, i) => (
+                  <span key={i} className={`text-xs px-2 py-0.5 rounded-full ${
+                    p.status === 'published' ? 'bg-green-900/50 text-green-400' :
+                    p.status === 'cancelled' ? 'bg-slate-800 text-slate-500 line-through' :
+                    'bg-slate-800 text-slate-400'
+                  }`}>
+                    {PLATFORM_ICONS[p.platform] || '📱'} {p.platform}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        )
+      })}
     </div>
   )
 }
 
-function SetupGuide({ accounts }: { accounts: AccountsData | null }) {
-  const steps = [
+// ── Accounts Tab ─────────────────────────────────────────────
+function AccountsTab({ accounts, loading }: { accounts: AccountsData | null; loading: boolean }) {
+  const platforms = ['instagram', 'linkedin', 'twitter', 'reddit', 'tiktok']
+
+  return (
+    <div className="space-y-5">
+      <div>
+        <h2 className="text-base font-semibold mb-1">Social Accounts</h2>
+        <p className="text-slate-400 text-sm">Connect your accounts to enable automated publishing reminders.</p>
+      </div>
+
+      {loading ? (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          {[1,2,3,4,5].map(i => <div key={i} className="card p-6 animate-pulse h-32" />)}
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          {platforms.map(platform => {
+            const status = accounts?.statuses?.[platform]
+            const isTikTok = platform === 'tiktok'
+            return (
+              <div key={platform} className="card p-5">
+                <div className="flex items-start justify-between">
+                  <div className="flex items-center gap-3">
+                    <span className="text-2xl">{PLATFORM_ICONS[platform] || '📱'}</span>
+                    <div>
+                      <div className="font-medium capitalize">{platform === 'twitter' ? 'X / Twitter' : platform}</div>
+                      <div className={`text-xs font-medium mt-0.5 ${
+                        status?.can_publish ? 'text-green-400' :
+                        status?.connected ? 'text-yellow-400' : 'text-slate-500'
+                      }`}>
+                        {status?.can_publish ? '🟢 Ready to publish' :
+                          status?.connected ? '🟡 Connected (limited access)' : '🔴 Not connected'}
+                      </div>
+                      {status?.username && <div className="text-xs text-slate-500 mt-0.5">@{status.username}</div>}
+                    </div>
+                  </div>
+                  {!status?.can_publish && (
+                    <a
+                      href={`/api/auth/connect/${platform}`}
+                      className={`text-xs px-3 py-1.5 rounded-lg font-medium transition-colors ${
+                        isTikTok
+                          ? 'bg-slate-700 text-slate-400 cursor-not-allowed'
+                          : 'bg-indigo-600 hover:bg-indigo-500 text-white'
+                      }`}
+                      title={isTikTok ? 'TikTok API requires 2–4 week approval' : `Connect ${platform}`}
+                    >
+                      {isTikTok ? '⏳ Pending API' : '＋ Connect'}
+                    </a>
+                  )}
+                  {status?.can_publish && (
+                    <a href={`/api/auth/connect/${platform}`}
+                      className="text-xs text-slate-500 hover:text-slate-300 transition-colors">
+                      Reconnect
+                    </a>
+                  )}
+                </div>
+                {status?.note && (
+                  <p className="text-xs text-slate-500 mt-3 pt-3 border-t border-slate-800">{status.note}</p>
+                )}
+                {!status?.can_publish && (
+                  <div className="mt-3 pt-3 border-t border-slate-800 text-xs text-slate-400">
+                    {platform === 'instagram' && 'Create a Meta Developer App → Add Instagram product → Redirect: forgcv-growth.vercel.app/api/auth/callback/instagram'}
+                    {platform === 'linkedin' && 'Create LinkedIn App at linkedin.com/developers/apps → Redirect: forgcv-growth.vercel.app/api/auth/callback/linkedin'}
+                    {platform === 'twitter' && 'Create Twitter App at developer.twitter.com → OAuth 2.0 Read+Write → Redirect: forgcv-growth.vercel.app/api/auth/callback/twitter'}
+                    {platform === 'reddit' && 'Create "script" app at reddit.com/prefs/apps → Redirect: forgcv-growth.vercel.app/api/auth/callback/reddit'}
+                    {platform === 'tiktok' && 'Apply for Content Posting API at developers.tiktok.com — approval takes 2–4 weeks'}
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      )}
+
+      <div className="card p-5 bg-indigo-950/30 border border-indigo-900/50">
+        <h3 className="font-medium text-sm mb-2">🔑 How to add credentials to Vercel</h3>
+        <p className="text-slate-400 text-xs mb-3">After creating developer apps, add their client IDs and secrets to Vercel:</p>
+        <ol className="text-xs text-slate-400 space-y-1.5">
+          <li>1. Go to <a href="https://vercel.com/qlf296s-projects/forgcv-growth/settings/environment-variables" target="_blank" rel="noopener noreferrer" className="text-indigo-400 hover:underline">Vercel Environment Variables ↗</a></li>
+          <li>2. Add: <code className="bg-slate-800 px-1 rounded">LINKEDIN_CLIENT_ID</code>, <code className="bg-slate-800 px-1 rounded">LINKEDIN_CLIENT_SECRET</code></li>
+          <li>3. Add: <code className="bg-slate-800 px-1 rounded">META_APP_ID</code>, <code className="bg-slate-800 px-1 rounded">META_APP_SECRET</code></li>
+          <li>4. Add: <code className="bg-slate-800 px-1 rounded">TWITTER_CLIENT_ID</code>, <code className="bg-slate-800 px-1 rounded">TWITTER_CLIENT_SECRET</code></li>
+          <li>5. Add: <code className="bg-slate-800 px-1 rounded">REDDIT_CLIENT_ID</code>, <code className="bg-slate-800 px-1 rounded">REDDIT_CLIENT_SECRET</code></li>
+          <li>6. Redeploy, then click &quot;Connect&quot; above for each platform</li>
+        </ol>
+      </div>
+    </div>
+  )
+}
+
+// ── Learning Tab ─────────────────────────────────────────────
+function LearningTab() {
+  const [open, setOpen] = useState<string | null>('instagram')
+
+  const guides = [
     {
-      title: 'AI Engine',
-      description: 'OpenRouter → Groq → Gemini cascade — Nexora keys configured.',
-      done: true,
-      href: null,
-      cta: null,
+      id: 'instagram',
+      title: '📸 Instagram',
+      subtitle: 'Reels · Carousels · Static Images',
+      content: `**Formats:** Reel (vertical 9:16, 15–90s), Carousel (up to 10 slides), Static Image (square or 4:5)
+
+**Caption:** 2,200 characters max. Put your hook in the first line (shown before "more"). Use line breaks for readability. Add your CTA before hashtags.
+
+**Hashtags:** 5–10 is optimal. Put them in the first comment, not the caption. Mix niche tags (#cvbuilder) with broader ones (#jobsearch).
+
+**Best times (Amsterdam):** Mon–Fri 09:00–11:00 (Reels), 11:00–13:00 (Carousels). Avoid weekends for professional content.
+
+**To publish manually:**
+1. Open Instagram → tap ＋
+2. For Reels: select Reel → upload vertical video
+3. For Carousel: select Post → tap the layers icon to add multiple images
+4. Paste the caption (from Studio tab → Copy)
+5. Add hashtags in the first comment after posting
+
+**KPIs to track:** Reach, Saves (most important!), Profile visits, Website clicks from bio.`,
     },
     {
-      title: 'Supabase Database',
-      description: 'PostgreSQL running in EU West (eu-west-1). All tables migrated.',
-      done: true,
-      href: 'https://supabase.com/dashboard/project/xetxxauohhipckeoghkn',
-      cta: 'Open Dashboard',
+      id: 'linkedin',
+      title: '💼 LinkedIn',
+      subtitle: 'Posts · Carousels · Articles',
+      content: `**Formats:** Text post (best for personal stories), Document carousel (PDF slides), Article (long-form).
+
+**Caption:** 3,000 characters max. First 3 lines must hook. Use short paragraphs (1–2 sentences). End with a question for engagement.
+
+**Hashtags:** 3–5 max. Professional, topic-specific. Add at the end.
+
+**Best times (Amsterdam):** Tue–Thu 07:30–09:00 (morning commute), 11:30–13:00 (lunch). Avoid weekends.
+
+**To publish manually:**
+1. Open LinkedIn → click "Start a post"
+2. Paste the caption
+3. For carousel: upload PDF → it becomes a swipeable document
+4. Add image if relevant
+5. Click Post
+
+**KPIs to track:** Impressions, Reactions, Comments, Reposts, Profile views, Website clicks.`,
     },
     {
-      title: 'Telegram Notifications',
-      description: 'Daily briefing at 07:00 Amsterdam via @ForgCVBot.',
-      done: true,
-      href: 'https://t.me/ForgCVBot',
-      cta: 'Open Bot',
+      id: 'reddit',
+      title: '🤖 Reddit',
+      subtitle: 'Community-first · Value-first',
+      content: `**Critical rule:** Reddit detects promotional posts instantly. ALWAYS provide genuine value first.
+
+**Target subreddits:** r/resumes, r/jobs, r/careerguidance, r/jobsearch, r/GetEmployed, r/cscareerquestions
+
+**Format:** Text post (best), not a link post. Write naturally like a community member.
+
+**When to mention ForgCV:** Only when directly relevant and helpful. Example: "I used a free tool called ForgCV which helped me..." — natural, not promotional.
+
+**Before posting:** Read the subreddit's rules. Check the top posts to understand tone. Never post the same content to multiple subreddits.
+
+**To publish manually:**
+1. Go to the subreddit (r/resumes, etc.)
+2. Click "Create Post" → Text
+3. Paste the title then body from your content
+4. Submit — do NOT add a link to forgcv.com in the post text unless it's genuinely helpful
+
+**KPIs to track:** Upvotes, Comments, Awards, Profile click-throughs.`,
     },
     {
-      title: 'Vercel Deployment + Cron',
-      description: 'Live at forgcv-growth.vercel.app — cron runs at 06:00 UTC.',
-      done: true,
-      href: 'https://vercel.com/qlf296s-projects/forgcv-growth',
-      cta: 'Open Vercel',
+      id: 'twitter',
+      title: '🐦 X / Twitter',
+      subtitle: 'Tweets · Threads',
+      content: `**Character limit:** 280 per tweet. For threads: number each tweet (1/ 2/ 3/).
+
+**Format:** Single tweet (punchy, one insight), Thread (3–7 tweets, educational), Quote tweet.
+
+**Best times (Amsterdam):** Mon–Fri 08:00–10:00, 17:00–19:00.
+
+**Hashtags:** 1–2 max, only if they add discoverability. Don't hashtag-stuff.
+
+**To publish manually:**
+1. Open X → click ＋ or compose
+2. For single tweet: paste text (check it's under 280 chars)
+3. For thread: click ＋ after each tweet to add the next one
+4. Add image if relevant
+5. Post
+
+**KPIs to track:** Impressions, Engagements (clicks + likes + RTs), Profile visits, Link clicks.`,
     },
     {
-      title: 'Instagram',
-      description: accounts?.statuses?.instagram?.can_publish
-        ? `Connected as @${accounts.statuses.instagram.username}`
-        : 'Create Meta Developer App → Instagram product → get Page access token.',
-      done: accounts?.statuses?.instagram?.can_publish || false,
-      href: accounts?.statuses?.instagram?.can_publish ? null : 'https://developers.facebook.com',
-      cta: accounts?.statuses?.instagram?.can_publish ? null : 'Create Meta App',
-      connectHref: '/api/auth/connect/instagram',
-    },
-    {
-      title: 'LinkedIn',
-      description: accounts?.statuses?.linkedin?.can_publish
-        ? `Connected — ready to publish`
-        : 'Create LinkedIn Developer App with w_member_social permission.',
-      done: accounts?.statuses?.linkedin?.can_publish || false,
-      href: accounts?.statuses?.linkedin?.can_publish ? null : 'https://www.linkedin.com/developers/apps/new',
-      cta: accounts?.statuses?.linkedin?.can_publish ? null : 'Create LinkedIn App',
-      connectHref: '/api/auth/connect/linkedin',
-    },
-    {
-      title: 'Reddit',
-      description: accounts?.statuses?.reddit?.can_publish
-        ? `Connected as @${accounts.statuses.reddit.username}`
-        : 'Create a "script" type app at reddit.com/prefs/apps, then click Connect.',
-      done: accounts?.statuses?.reddit?.can_publish || false,
-      href: accounts?.statuses?.reddit?.can_publish ? null : 'https://www.reddit.com/prefs/apps',
-      cta: accounts?.statuses?.reddit?.can_publish ? null : 'Create Reddit App',
-      connectHref: '/api/auth/connect/reddit',
-    },
-    {
-      title: 'Twitter / X',
-      description: accounts?.statuses?.twitter?.can_publish
-        ? `Connected — ready to publish`
-        : 'Create app at developer.twitter.com with read+write OAuth 2.0 permissions.',
-      done: accounts?.statuses?.twitter?.can_publish || false,
-      href: accounts?.statuses?.twitter?.can_publish ? null : 'https://developer.twitter.com/en/portal/projects-and-apps',
-      cta: accounts?.statuses?.twitter?.can_publish ? null : 'Create X App',
-      connectHref: '/api/auth/connect/twitter',
-    },
-    {
-      title: 'TikTok',
-      description: 'Create TikTok Developer app and apply for Content Posting API — approval takes 2–4 weeks.',
-      done: accounts?.statuses?.tiktok?.can_publish || false,
-      href: 'https://developers.tiktok.com',
-      cta: 'Apply for API',
-      connectHref: '/api/auth/connect/tiktok',
+      id: 'tiktok',
+      title: '🎵 TikTok',
+      subtitle: 'Short videos · Trending content',
+      content: `**Status:** TikTok Content Posting API requires a 2–4 week approval process. Content is prepared in the system for when API access is granted or for manual upload.
+
+**Specs:** Vertical video only (9:16), 1080×1920px, 15–60 seconds optimal, max 10 minutes.
+
+**Hook:** First 1–2 seconds must stop the scroll. Use a bold claim, surprising stat, or visual shock.
+
+**Captions:** 2,200 characters. Brief, with 3–5 hashtags. Add link in bio.
+
+**Trending sounds:** Use the TikTok Discover page → Sounds to find trending audio before posting.
+
+**To publish manually:**
+1. Open TikTok → tap ＋
+2. Record or upload your video
+3. Trim as needed
+4. Add caption and hashtags
+5. Update your bio link to forgcv.com (or use a Linktree)
+6. Post
+
+**KPIs to track:** Views, Watch time %, Profile visits, Bio link clicks, Follows.`,
     },
   ]
 
   return (
-    <div className="card divide-y divide-slate-800">
-      {steps.map((step, i) => (
-        <div key={i} className="p-4 flex items-start gap-4">
-          <div className={`w-6 h-6 rounded-full flex-shrink-0 flex items-center justify-center text-xs font-bold mt-0.5 ${
-            step.done ? 'bg-green-900/60 text-green-400' : 'bg-slate-800 text-slate-500'
-          }`}>
-            {step.done ? '✓' : i + 1}
-          </div>
-          <div className="flex-1 min-w-0">
-            <div className="font-medium text-sm">{step.title}</div>
-            <div className="text-xs text-slate-400 mt-0.5">{step.description}</div>
-          </div>
-          <div className="flex flex-col items-end gap-1.5 flex-shrink-0">
-            {step.href && (
-              <a href={step.href} target="_blank" rel="noopener noreferrer"
-                className="text-xs text-indigo-400 hover:text-indigo-300 transition-colors whitespace-nowrap">
-                {step.cta} ↗
-              </a>
-            )}
-            {(step as { connectHref?: string }).connectHref && !step.done && (
-              <a href={(step as { connectHref?: string }).connectHref}
-                className="text-xs px-3 py-1 bg-indigo-700 hover:bg-indigo-600 text-white rounded-md transition-colors whitespace-nowrap">
-                Connect →
-              </a>
-            )}
-          </div>
+    <div className="space-y-3">
+      <div>
+        <h2 className="text-base font-semibold mb-1">Platform Publishing Guides</h2>
+        <p className="text-slate-400 text-sm">Step-by-step instructions for publishing on each platform manually.</p>
+      </div>
+      {guides.map(guide => (
+        <div key={guide.id} className="card overflow-hidden">
+          <button
+            className="w-full p-4 flex items-center justify-between text-left"
+            onClick={() => setOpen(open === guide.id ? null : guide.id)}
+          >
+            <div>
+              <span className="font-semibold text-sm">{guide.title}</span>
+              <span className="text-xs text-slate-400 ml-2">{guide.subtitle}</span>
+            </div>
+            <span className="text-slate-500 text-xs">{open === guide.id ? '▲' : '▼'}</span>
+          </button>
+          {open === guide.id && (
+            <div className="px-4 pb-4 border-t border-slate-800 pt-4">
+              <div className="text-sm text-slate-300 space-y-3 leading-relaxed">
+                {guide.content.split('\n\n').map((para, i) => {
+                  if (para.startsWith('**') && para.includes(':**')) {
+                    const [title, ...rest] = para.split('\n')
+                    return (
+                      <div key={i}>
+                        <p className="font-semibold text-white text-xs uppercase tracking-wide mb-1">
+                          {title.replace(/\*\*/g, '')}
+                        </p>
+                        {rest.map((line, j) => (
+                          <p key={j} className="text-slate-400 text-xs leading-relaxed">{line}</p>
+                        ))}
+                      </div>
+                    )
+                  }
+                  return <p key={i} className="text-slate-400 text-xs leading-relaxed">{para}</p>
+                })}
+              </div>
+            </div>
+          )}
         </div>
       ))}
+    </div>
+  )
+}
+
+// ── System Tab ───────────────────────────────────────────────
+function SystemTab({ health, loading, onAudit, onSetupWebhook, onWeeklyReport }: {
+  health: HealthData | null
+  loading: boolean
+  onAudit: () => void
+  onSetupWebhook: () => void
+  onWeeklyReport: () => void
+}) {
+  const statusDot = (ok: boolean) => ok
+    ? <span className="w-2 h-2 rounded-full bg-green-400 inline-block" />
+    : <span className="w-2 h-2 rounded-full bg-red-400 inline-block" />
+
+  const eventColor: Record<string, string> = {
+    success: 'text-green-400', warning: 'text-yellow-400', error: 'text-red-400', info: 'text-blue-400',
+  }
+
+  return (
+    <div className="space-y-5">
+      {loading ? (
+        <div className="card p-8 text-center text-slate-400 text-sm">Loading system status...</div>
+      ) : (
+        <>
+          {/* Status cards */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <div className="card p-4">
+              <div className="flex items-center gap-2 mb-1">
+                {statusDot(true)}
+                <span className="text-xs text-slate-400">Supabase</span>
+              </div>
+              <div className="text-sm font-medium text-white">Connected</div>
+              <div className="text-xs text-slate-500">EU-West · PostgreSQL 17</div>
+            </div>
+            <div className="card p-4">
+              <div className="flex items-center gap-2 mb-1">
+                {statusDot(!!health?.telegram.webhook_active)}
+                <span className="text-xs text-slate-400">Telegram</span>
+              </div>
+              <div className="text-sm font-medium text-white">
+                {health?.telegram.webhook_active ? 'Webhook Active' : 'Webhook Missing'}
+              </div>
+              <div className="text-xs text-slate-500">{health?.telegram.bot_username}</div>
+            </div>
+            <div className="card p-4">
+              <div className="flex items-center gap-2 mb-1">
+                {statusDot(!!health?.today.campaign_id)}
+                <span className="text-xs text-slate-400">Today&apos;s Campaign</span>
+              </div>
+              <div className="text-sm font-medium text-white capitalize">
+                {health?.today.campaign_status || 'None'}
+              </div>
+              <div className="text-xs text-slate-500 truncate">{health?.today.campaign_theme || '—'}</div>
+            </div>
+            <div className="card p-4">
+              <div className="flex items-center gap-2 mb-1">
+                <span className="w-2 h-2 rounded-full bg-blue-400 inline-block" />
+                <span className="text-xs text-slate-400">Next Briefing</span>
+              </div>
+              <div className="text-sm font-medium text-white">{health?.scheduler.next_briefing_local || '07:00'}</div>
+              <div className="text-xs text-slate-500">Amsterdam time</div>
+            </div>
+          </div>
+
+          {/* AI Providers */}
+          <div className="card p-5">
+            <h3 className="font-semibold text-sm mb-3">🤖 AI Provider Cascade</h3>
+            <div className="space-y-2">
+              {health?.ai.providers.map((p, i) => (
+                <div key={i} className="flex items-center gap-3 text-sm">
+                  <span className="w-5 h-5 rounded-full bg-indigo-900/60 flex items-center justify-center text-xs text-indigo-400 font-bold flex-shrink-0">{i + 1}</span>
+                  <span className="text-slate-300">{p}</span>
+                  <span className="text-xs text-green-400 ml-auto">Active</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Reminders */}
+          {(health?.scheduler.overdue_reminders ?? 0) > 0 && (
+            <div className="card p-4 bg-yellow-900/20 border border-yellow-800">
+              <div className="flex items-center justify-between">
+                <div>
+                  <span className="text-yellow-400 font-medium text-sm">
+                    ⏰ {health?.scheduler.overdue_reminders} overdue reminder(s)
+                  </span>
+                  <p className="text-xs text-slate-400 mt-0.5">These will be sent at the next cron execution (every 30 min).</p>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Actions */}
+          <div className="card p-5">
+            <h3 className="font-semibold text-sm mb-3">⚡ Manual Actions</h3>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              <button onClick={onSetupWebhook}
+                className="p-3 bg-slate-800 hover:bg-slate-700 rounded-lg text-left transition-colors">
+                <div className="text-sm font-medium">📡 Register Telegram Webhook</div>
+                <div className="text-xs text-slate-400 mt-0.5">Connect bot to receive button presses</div>
+              </button>
+              <button onClick={onAudit}
+                className="p-3 bg-slate-800 hover:bg-slate-700 rounded-lg text-left transition-colors">
+                <div className="text-sm font-medium">🌐 Run Website Audit</div>
+                <div className="text-xs text-slate-400 mt-0.5">Check forgcv.com page status</div>
+              </button>
+              <button onClick={onWeeklyReport}
+                className="p-3 bg-slate-800 hover:bg-slate-700 rounded-lg text-left transition-colors">
+                <div className="text-sm font-medium">📈 Generate Weekly Report</div>
+                <div className="text-xs text-slate-400 mt-0.5">AI analysis + send to Telegram</div>
+              </button>
+            </div>
+          </div>
+
+          {/* System events log */}
+          {health?.database.recent_events && health.database.recent_events.length > 0 && (
+            <div className="card p-5">
+              <h3 className="font-semibold text-sm mb-3">📋 Recent System Events</h3>
+              <div className="space-y-2">
+                {health.database.recent_events.map((evt, i) => (
+                  <div key={i} className="flex items-start gap-3 text-xs">
+                    <span className={`font-medium flex-shrink-0 ${eventColor[evt.status] || 'text-slate-400'}`}>
+                      {evt.status === 'success' ? '✓' : evt.status === 'error' ? '✗' : evt.status === 'warning' ? '⚠' : 'ℹ'}
+                    </span>
+                    <span className="text-slate-500 flex-shrink-0 font-mono">
+                      {new Date(evt.created_at).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Amsterdam' })}
+                    </span>
+                    <span className="text-slate-300">{evt.event_type}</span>
+                    <span className="text-slate-500 ml-auto truncate max-w-xs">{evt.message}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Vercel crons */}
+          <div className="card p-5">
+            <h3 className="font-semibold text-sm mb-3">⏰ Scheduled Jobs (Vercel Crons)</h3>
+            <div className="space-y-2">
+              {[
+                { cron: '0 6 * * *', label: 'Daily Campaign Generation', time: '07:00 Amsterdam', path: '/api/briefing/generate' },
+                { cron: '*/30 * * * *', label: 'Publication Reminders', time: 'Every 30 min', path: '/api/reminders/process' },
+              ].map((job, i) => (
+                <div key={i} className="flex items-center gap-3 text-xs py-2 border-b border-slate-800 last:border-0">
+                  <code className="bg-slate-800 px-2 py-0.5 rounded text-indigo-300 font-mono">{job.cron}</code>
+                  <span className="text-slate-300">{job.label}</span>
+                  <span className="text-slate-500 ml-auto">{job.time}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Quick links */}
+          <div className="card p-5">
+            <h3 className="font-semibold text-sm mb-3">🔗 Infrastructure Links</h3>
+            <div className="grid grid-cols-2 gap-2 text-xs">
+              {[
+                { label: 'Supabase Dashboard', url: 'https://supabase.com/dashboard/project/xetxxauohhipckeoghkn' },
+                { label: 'Vercel Deployment', url: 'https://vercel.com/qlf296s-projects/forgcv-growth' },
+                { label: 'Vercel Env Variables', url: 'https://vercel.com/qlf296s-projects/forgcv-growth/settings/environment-variables' },
+                { label: 'Telegram Bot', url: 'https://t.me/ForgCVBot' },
+                { label: 'forgcv.com', url: 'https://forgcv.com' },
+                { label: 'GitHub Repo', url: 'https://github.com/Qlf296/forgcv-growth' },
+              ].map(link => (
+                <a key={link.label} href={link.url} target="_blank" rel="noopener noreferrer"
+                  className="flex items-center gap-1 text-indigo-400 hover:text-indigo-300 transition-colors">
+                  {link.label} ↗
+                </a>
+              ))}
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
+// ── Shared components ────────────────────────────────────────
+function StatCard({ label, value, color }: { label: string; value: string | number; color: string }) {
+  return (
+    <div className="card p-4">
+      <div className={`text-2xl font-bold ${color}`}>{value}</div>
+      <div className="text-xs text-slate-400 mt-1">{label}</div>
     </div>
   )
 }
