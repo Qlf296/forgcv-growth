@@ -39,12 +39,16 @@ export async function POST(request: Request) {
       .eq('date', campaignDate)
       .single()
 
-    if (existing && existing.status !== 'failed') {
-      return NextResponse.json({
-        message: 'Campaign already exists',
-        campaign_id: existing.id,
-        status: existing.status,
-      })
+    if (existing) {
+      if (existing.status !== 'failed') {
+        return NextResponse.json({
+          message: 'Campaign already exists',
+          campaign_id: existing.id,
+          status: existing.status,
+        })
+      }
+      // Delete failed campaign so we can regenerate cleanly
+      await supabase.from('campaigns').delete().eq('id', existing.id)
     }
 
     // Get yesterday's performance data
