@@ -57,7 +57,7 @@ function getProviders(): Provider[] {
       name: 'openrouter',
       url: 'https://openrouter.ai/api/v1/chat/completions',
       apiKey: process.env.OPENROUTER_API_KEY,
-      model: 'anthropic/claude-3-haiku',
+      model: 'anthropic/claude-haiku-4.5',
       extraHeaders: {
         'HTTP-Referer': 'https://forgcv-growth.vercel.app',
         'X-Title': 'ForgCV Growth',
@@ -67,13 +67,20 @@ function getProviders(): Provider[] {
       name: 'groq',
       url: 'https://api.groq.com/openai/v1/chat/completions',
       apiKey: process.env.GROQ_API_KEY,
-      model: 'llama-3.3-70b-versatile',
+      model: 'qwen/qwen3.8-27b',
     },
     {
       name: 'gemini',
       url: 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions',
       apiKey: process.env.GEMINI_API_KEY,
-      model: 'gemini-2.0-flash',
+      model: 'gemini-3.5-flash-lite',
+    },
+    {
+      // Additional Gemini model names tried by Nexora
+      name: 'gemini-flash',
+      url: 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions',
+      apiKey: process.env.GEMINI_API_KEY,
+      model: 'gemini-2.5-flash',
     },
   ]
 }
