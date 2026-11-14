@@ -1,0 +1,12 @@
+{
+  "crons": [
+    {
+      "path": "/api/briefing/generate",
+      "schedule": "0 6 * * *"
+    },
+    {
+      "path": "/api/webhooks/cron",
+      "schedule": "*/15 * * * *"
+    }
+  ]
+}
