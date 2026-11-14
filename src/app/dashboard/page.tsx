@@ -32,6 +32,16 @@ export default function DashboardPage() {
     timeZone: 'Europe/Amsterdam',
   })
 
+  // Show success toast after OAuth connect redirect
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    const connected = params.get('connected')
+    const error = params.get('connect_error')
+    if (connected) setMessage(`✅ ${connected.charAt(0).toUpperCase() + connected.slice(1)} connected successfully!`)
+    if (error) setMessage(`❌ Failed to connect ${error}: ${params.get('reason') || 'unknown error'}`)
+    if (connected || error) window.history.replaceState({}, '', '/dashboard')
+  }, [])
+
   async function loadData() {
     setLoading(true)
     try {
@@ -374,21 +384,38 @@ function PostCard({ post, onUpdate }: { post: Post; onUpdate: () => void }) {
 }
 
 function AccountCard({ platform, status }: { platform: string; status: AccountStatus }) {
+  const connectUrl = `/api/auth/connect/${platform}`
+  const isTikTok = platform === 'tiktok'
+
   return (
-    <div className="card p-4">
-      <div className="flex items-center gap-2 mb-2">
+    <div className="card p-4 flex flex-col gap-2">
+      <div className="flex items-center gap-2">
         <span className="text-xl">{PLATFORM_ICONS[platform] || '📱'}</span>
         <span className="font-medium text-sm capitalize">{platform}</span>
       </div>
       <div className={`text-xs font-medium ${
         status.can_publish ? 'text-green-400' :
-        status.connected ? 'text-yellow-400' : 'text-red-400'
+        status.connected ? 'text-yellow-400' : 'text-slate-500'
       }`}>
-        {status.can_publish ? '✓ Ready' :
-         status.connected ? '⚠ Limited' : '✗ Not connected'}
+        {status.can_publish ? '✓ Ready to publish' :
+         status.connected ? '⚠ Connected, limited' : '○ Not connected'}
       </div>
       {status.username && (
-        <div className="text-xs text-slate-500 mt-0.5">@{status.username}</div>
+        <div className="text-xs text-slate-500">@{status.username}</div>
+      )}
+      {!status.can_publish && (
+        <a
+          href={connectUrl}
+          className="mt-auto text-xs text-center px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-md transition-colors font-medium"
+          title={isTikTok ? 'TikTok requires API audit approval (2–4 weeks)' : `Connect ${platform}`}
+        >
+          {isTikTok ? '⏳ Audit Pending' : '＋ Connect'}
+        </a>
+      )}
+      {status.can_publish && (
+        <a href={connectUrl} className="text-xs text-slate-600 hover:text-slate-400 text-center transition-colors">
+          Reconnect
+        </a>
       )}
     </div>
   )
@@ -397,46 +424,80 @@ function AccountCard({ platform, status }: { platform: string; status: AccountSt
 function SetupGuide({ accounts }: { accounts: AccountsData | null }) {
   const steps = [
     {
-      title: 'Configure Environment',
-      description: 'Copy .env.example to .env.local and fill in your API keys.',
-      done: false,
-      action: 'See .env.example in the project root',
+      title: 'AI Engine',
+      description: 'OpenRouter → Groq → Gemini cascade — Nexora keys configured.',
+      done: true,
+      href: null,
+      cta: null,
     },
     {
-      title: 'Set up Telegram Notifications',
-      description: 'Create a Telegram bot at t.me/BotFather. Add TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID to .env.local.',
-      done: false,
-      action: 'Visit t.me/BotFather',
+      title: 'Supabase Database',
+      description: 'PostgreSQL running in EU West (eu-west-1). All tables migrated.',
+      done: true,
+      href: 'https://supabase.com/dashboard/project/xetxxauohhipckeoghkn',
+      cta: 'Open Dashboard',
     },
     {
-      title: 'Connect Instagram',
-      description: 'You need a Professional Instagram account + Meta Developer App. Set INSTAGRAM_ACCESS_TOKEN and INSTAGRAM_BUSINESS_ACCOUNT_ID.',
+      title: 'Telegram Notifications',
+      description: 'Daily briefing at 07:00 Amsterdam via @ForgCVBot.',
+      done: true,
+      href: 'https://t.me/ForgCVBot',
+      cta: 'Open Bot',
+    },
+    {
+      title: 'Vercel Deployment + Cron',
+      description: 'Live at forgcv-growth.vercel.app — cron runs at 06:00 UTC.',
+      done: true,
+      href: 'https://vercel.com/qlf296s-projects/forgcv-growth',
+      cta: 'Open Vercel',
+    },
+    {
+      title: 'Instagram',
+      description: accounts?.statuses?.instagram?.can_publish
+        ? `Connected as @${accounts.statuses.instagram.username}`
+        : 'Create Meta Developer App → Instagram product → get Page access token.',
       done: accounts?.statuses?.instagram?.can_publish || false,
-      action: 'developers.facebook.com',
+      href: accounts?.statuses?.instagram?.can_publish ? null : 'https://developers.facebook.com',
+      cta: accounts?.statuses?.instagram?.can_publish ? null : 'Create Meta App',
+      connectHref: '/api/auth/connect/instagram',
     },
     {
-      title: 'Connect LinkedIn',
-      description: 'Create a LinkedIn app with w_member_social permission. Set LINKEDIN_ACCESS_TOKEN.',
+      title: 'LinkedIn',
+      description: accounts?.statuses?.linkedin?.can_publish
+        ? `Connected — ready to publish`
+        : 'Create LinkedIn Developer App with w_member_social permission.',
       done: accounts?.statuses?.linkedin?.can_publish || false,
-      action: 'linkedin.com/developers',
+      href: accounts?.statuses?.linkedin?.can_publish ? null : 'https://www.linkedin.com/developers/apps/new',
+      cta: accounts?.statuses?.linkedin?.can_publish ? null : 'Create LinkedIn App',
+      connectHref: '/api/auth/connect/linkedin',
     },
     {
-      title: 'Connect Reddit',
-      description: 'Create a script-type app at reddit.com/prefs/apps. Set REDDIT_CLIENT_ID, SECRET, USERNAME, PASSWORD.',
+      title: 'Reddit',
+      description: accounts?.statuses?.reddit?.can_publish
+        ? `Connected as @${accounts.statuses.reddit.username}`
+        : 'Create a "script" type app at reddit.com/prefs/apps, then click Connect.',
       done: accounts?.statuses?.reddit?.can_publish || false,
-      action: 'reddit.com/prefs/apps',
+      href: accounts?.statuses?.reddit?.can_publish ? null : 'https://www.reddit.com/prefs/apps',
+      cta: accounts?.statuses?.reddit?.can_publish ? null : 'Create Reddit App',
+      connectHref: '/api/auth/connect/reddit',
     },
     {
-      title: 'Set up Supabase',
-      description: 'Create a free project at supabase.com. Run the SQL migration. Set SUPABASE_URL and keys.',
-      done: false,
-      action: 'supabase.com',
+      title: 'Twitter / X',
+      description: accounts?.statuses?.twitter?.can_publish
+        ? `Connected — ready to publish`
+        : 'Create app at developer.twitter.com with read+write OAuth 2.0 permissions.',
+      done: accounts?.statuses?.twitter?.can_publish || false,
+      href: accounts?.statuses?.twitter?.can_publish ? null : 'https://developer.twitter.com/en/portal/projects-and-apps',
+      cta: accounts?.statuses?.twitter?.can_publish ? null : 'Create X App',
+      connectHref: '/api/auth/connect/twitter',
     },
     {
-      title: 'Deploy to Vercel',
-      description: 'Connect the GitHub repo to Vercel. Add all environment variables. Enable Cron Jobs for 07:00 briefing.',
-      done: false,
-      action: 'vercel.com',
+      title: 'TikTok',
+      description: 'Create TikTok Developer app and apply for Content Posting API — approval takes 2–4 weeks.',
+      done: accounts?.statuses?.tiktok?.can_publish || false,
+      href: 'https://developers.tiktok.com',
+      cta: 'Apply for API',
+      connectHref: '/api/auth/connect/tiktok',
     },
   ]
 
@@ -445,15 +506,28 @@ function SetupGuide({ accounts }: { accounts: AccountsData | null }) {
       {steps.map((step, i) => (
         <div key={i} className="p-4 flex items-start gap-4">
           <div className={`w-6 h-6 rounded-full flex-shrink-0 flex items-center justify-center text-xs font-bold mt-0.5 ${
-            step.done ? 'bg-green-900 text-green-400' : 'bg-slate-800 text-slate-500'
+            step.done ? 'bg-green-900/60 text-green-400' : 'bg-slate-800 text-slate-500'
           }`}>
             {step.done ? '✓' : i + 1}
           </div>
-          <div className="flex-1">
+          <div className="flex-1 min-w-0">
             <div className="font-medium text-sm">{step.title}</div>
             <div className="text-xs text-slate-400 mt-0.5">{step.description}</div>
           </div>
-          <div className="text-xs text-indigo-400 flex-shrink-0">{step.action}</div>
+          <div className="flex flex-col items-end gap-1.5 flex-shrink-0">
+            {step.href && (
+              <a href={step.href} target="_blank" rel="noopener noreferrer"
+                className="text-xs text-indigo-400 hover:text-indigo-300 transition-colors whitespace-nowrap">
+                {step.cta} ↗
+              </a>
+            )}
+            {(step as { connectHref?: string }).connectHref && !step.done && (
+              <a href={(step as { connectHref?: string }).connectHref}
+                className="text-xs px-3 py-1 bg-indigo-700 hover:bg-indigo-600 text-white rounded-md transition-colors whitespace-nowrap">
+                Connect →
+              </a>
+            )}
+          </div>
         </div>
       ))}
     </div>

@@ -1,5 +1,4 @@
-// LinkedIn API Integration
-// Requires: LinkedIn Developer App with w_member_social permission
+// LinkedIn UGC API — requires LinkedIn Developer App with w_member_social permission
 
 const BASE_URL = 'https://api.linkedin.com/v2'
 
@@ -12,26 +11,15 @@ export interface LinkedInStatus {
   note?: string
 }
 
-export async function checkLinkedInConnection(): Promise<LinkedInStatus> {
-  const token = process.env.LINKEDIN_ACCESS_TOKEN
-
-  if (!token) {
-    return {
-      connected: false,
-      can_publish: false,
-      note: 'LINKEDIN_ACCESS_TOKEN not configured. Create app at linkedin.com/developers. Required permission: w_member_social',
-    }
+export async function checkLinkedInConnection(token?: string): Promise<LinkedInStatus> {
+  const t = token || process.env.LINKEDIN_ACCESS_TOKEN
+  if (!t) {
+    return { connected: false, can_publish: false, note: 'Not connected. Click "Connect" to link your LinkedIn account.' }
   }
 
   try {
-    const res = await fetch(`${BASE_URL}/me`, {
-      headers: { Authorization: `Bearer ${token}` },
-    })
-
-    if (!res.ok) {
-      return { connected: false, can_publish: false, error: 'Token invalid or expired' }
-    }
-
+    const res = await fetch(`${BASE_URL}/me`, { headers: { Authorization: `Bearer ${t}` } })
+    if (!res.ok) return { connected: false, can_publish: false, error: 'Token invalid or expired' }
     const data = await res.json() as { id: string; localizedFirstName: string; localizedLastName: string }
     return {
       connected: true,
@@ -46,14 +34,12 @@ export async function checkLinkedInConnection(): Promise<LinkedInStatus> {
 
 export async function publishLinkedInPost(
   text: string,
-  personUrn?: string
+  personUrn?: string,
+  token?: string
 ): Promise<{ success: boolean; post_id?: string; error?: string }> {
-  const token = process.env.LINKEDIN_ACCESS_TOKEN
+  const t = token || process.env.LINKEDIN_ACCESS_TOKEN
   const urn = personUrn || process.env.LINKEDIN_PERSON_URN
-
-  if (!token || !urn) {
-    return { success: false, error: 'LinkedIn not configured' }
-  }
+  if (!t || !urn) return { success: false, error: 'LinkedIn not configured' }
 
   try {
     const body = {
@@ -71,7 +57,7 @@ export async function publishLinkedInPost(
     const res = await fetch(`${BASE_URL}/ugcPosts`, {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${token}`,
+        Authorization: `Bearer ${t}`,
         'Content-Type': 'application/json',
         'X-Restli-Protocol-Version': '2.0.0',
       },
@@ -79,13 +65,12 @@ export async function publishLinkedInPost(
     })
 
     if (!res.ok) {
-      const err = await res.json() as { message: string }
-      return { success: false, error: err.message }
+      const err = await res.json() as { message?: string }
+      return { success: false, error: err.message || 'LinkedIn API error' }
     }
 
     const id = res.headers.get('x-restli-id')
     return { success: true, post_id: id || undefined }
-
   } catch (err) {
     return { success: false, error: String(err) }
   }

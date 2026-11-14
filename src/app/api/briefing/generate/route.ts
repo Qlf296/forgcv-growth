@@ -8,22 +8,24 @@ import { toZonedTime } from 'date-fns-tz'
 
 // POST /api/briefing/generate
 // Called by Vercel Cron at 06:00 UTC (= 07:00 Amsterdam)
-// Also callable manually from the dashboard
+// Also callable manually from dashboard with { manual: true }
 export async function POST(request: Request) {
   try {
-    // Verify cron secret to prevent unauthorized calls
     const authHeader = request.headers.get('authorization')
     const cronSecret = process.env.CRON_SECRET
 
-    if (cronSecret && authHeader !== `Bearer ${cronSecret}`) {
-      // Allow from dashboard without secret (but log it)
-      const body = await request.json().catch(() => ({})) as { manual?: boolean; date?: string }
-      if (!body.manual) {
-        return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-      }
+    // Read body once
+    const body = await request.json().catch(() => ({})) as { manual?: boolean; date?: string }
+
+    // Auth: allow cron secret OR explicit manual flag from dashboard
+    const isAuthorized =
+      (cronSecret && authHeader === `Bearer ${cronSecret}`) ||
+      body.manual === true
+
+    if (!isAuthorized) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    const body = await request.json().catch(() => ({})) as { date?: string }
     const tz = 'Europe/Amsterdam'
     const now = toZonedTime(new Date(), tz)
     const campaignDate = body.date || format(now, 'yyyy-MM-dd')
@@ -60,7 +62,7 @@ export async function POST(request: Request) {
     console.log(`[Briefing] Generating campaign for ${campaignDate}`)
     const result = await generateDailyCampaign(campaignDate, perfData || undefined)
 
-    // Fetch full campaign for notification
+    // Fetch full campaign for Telegram notification
     const { data: campaign } = await supabase
       .from('campaigns')
       .select('*, posts(*)')
@@ -68,7 +70,7 @@ export async function POST(request: Request) {
       .single()
 
     if (campaign) {
-      const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'
+      const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://forgcv-growth.vercel.app'
       await sendDailyBriefing(campaign, appUrl)
     }
 
@@ -85,7 +87,7 @@ export async function POST(request: Request) {
   }
 }
 
-// GET /api/briefing/today
+// GET /api/briefing/today — returns today's campaign if it exists
 export async function GET() {
   const supabase = createSupabaseServer()
   const tz = 'Europe/Amsterdam'
